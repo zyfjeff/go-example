@@ -26,7 +26,7 @@ func main() {
 }
 ```
 上面的代码可以直接打印custom_struct，还可以直接打印数组等，功能还是很强大的，但是却很少有人知道，go语言在内部也有一套
-print，println方法用来答应你输出，用的人很少，这些打印方法一般用于go内部debug使用，不支持打印自定义类型。
+print，println方法用来打印你的输出，用的人很少，这些打印方法一般用于go内部debug使用，不支持打印自定义类型。
 
 ## 大容量的常量
 在go语言中，数字可以直接写成指数形式，例如`3e20`，而且go中的常量可以接收任意精度的常量表达的值，例如下面这个例子。
@@ -194,4 +194,207 @@ func main() {
 在上面的例子中给rect定义了两个方法，一个是指针作为第一个参数，另一个则是值作为参数，但是在使用的时候居然可以不加区别的使用。
 这其实都是go在背后帮我们做了转换，但是不影响最终的效果，指针作为参数的，在函数内部操作会直接影响到原有的变量。
 
+## Interface神器
+接口是什么?，说白了就是一堆方法的集合。C++没有接口，但是可以通过纯虚函数来实现一个接口，在java中原生就有接口的概念，但是我想说的是golang的
+接口要比这两者都要强大。无论是C++还是java对于一个具体类需要实现对应接口的所有方法才能被这个接口抽象，而golang不需要，golang中你只需要实现
+接口的至少一个方法即可。比如说对于经典企鹅是鸟但不会飞的这个问题，C++和java都没办法让企鹅实现一个鸟类的接口，但是golang确可以简化这个设计，
+只需要实现鸟类接口中除了飞翔这个方法外的其他方法。在golang中还有一个空接口`interface{}`，这个可以代表任意类型，如果将空接口作为函数参数
+那么这个函数可以接收任意类型的数据。但是空接口存在一个设计很ugly的地方，请看下面的这段代码:
 
+```
+func PrintAll(vals []interface{}) {
+    for _,val := range vals {
+        fmt.Println(val)
+    }
+}
+
+func main() {
+    names := []string{"test1","test2","test3"}
+    PrintAll(names)
+}
+```
+根据上面的描述，空接口应该是可以接受任意类型的数据的，上面的代码理论上可以正常运行，但是我不的不说我撒谎了，直接编译运行会有下面的错误:
+
+```
+cannot use names (type []string) as type []interface {} in argument to PrintAll
+```
+两者居然不能直接做转换，不是说空接口可以接收任意类型的数据的吗?，的确是的，不过上面的代码需要改一改。
+
+```
+func PrintAll(vals []interface{}) {
+    for _,val := range vals {
+        fmt.Println(val)
+    }
+}
+
+func main() {
+    names := []string{"test1","test2","test3"}
+    vals := make([]interface{},len(names))
+    for i,v := range names {
+        vals[i] = v
+    }
+    PrintAll(vals)
+}
+
+```
+现在可以正常工作了，偏要先赋值给空接口。这设计的确有点ugly。golang的接口还有另外一个不错的地方就是，你可以设计成接收指针的方法
+也可以设计成接收value的方法，这都是ok的。但是这里面依然存在一些误区，请看下面这段代码:
+
+```
+type Animal interface {
+    Speak() string
+}
+
+type Dog struct {
+
+}
+
+func (d Dog) Speak() string {
+    return "Woof"
+}
+
+type Cat struct {
+
+}
+
+func (c Cat) Speak() string {
+    return "Meow"
+}
+
+func main() {
+    animals := []Animal{Dog{},Cat{}}
+    for _,animal := range animals {
+        fmt.Println(animal.Speak())
+    }
+}
+```
+上面的代码声明了Animal接口，然后Dog和Cat实现了这个接口。然后在main函数中通过Animal接口对Dog和Cat进行抽象，依次调用对应的Speak方法。
+上面的代码工作正常，直到有一天，我将Cat的Speak方法由原来的`(c Cat)`改成了`(c *Cat)`接收一个指针。再次运行上面的代码，出现了错误:
+
+```
+cannot use Cat literal (type Cat) as type Animal in array element:
+	Cat does not implement Animal (Speak method has pointer receiver)
+```
+传入的`Cat{}`是一个value，而Cat的Speak方法是接收一个指针。好吧，改动下代码把`Cat{}`改成`new(Cat)`，现在可以正常工作了，现在试着
+将`(c *Cat)`改回`(c Cat)`然后依然传递一个Cat指针给这个方法。你会发现这居然可以。最后得出的结论就是，值类型不能传递给接收指针的方法
+但是指针类型却可以传递给接收值的方法。是不是感觉设计上有点ugly。但这都是有原因的，更多的内容可以参考下面这两篇文章:
+
+* [How to use interfaces in Go](http://jordanorelli.com/post/32665860244/how-to-use-interfaces-in-go)
+* [Go Data Structures: Interfaces](http://research.swtch.com/interfaces)
+
+## 专属的错误处理方式
+在golang中错误处理都是通过返回值进行，golang内置一个error的接口，一般情况下你直接通过`errors.New`就可以产生一个带着指定错误消息的
+error value，如果你想给自己的类型设计一个错误类型，只需要自定义一个错误类型，然后实现`Error`接口即可，代码如下:
+
+```
+package main
+
+import "errors"
+import "fmt"
+
+//返回一个错误,通过errors.New创建一个错误对象
+func f1(arg int) (int,error) {
+    if arg == 42 {
+        return -1,errors.New("Can't work with 42")
+    }
+
+    return arg + 3,nil
+}
+
+type argError struct {
+    arg int
+    prob string
+}
+
+//给结构体定义了一个错误
+func (e *argError) Error() string {
+    return fmt.Sprintf("%d - %s",e.arg,e.prob)
+}
+
+//只要实现了Error方法都可以通过error接受，error就是一个接口
+func f2(arg int) (int,error) {
+    if arg == 42 {
+        return -1,&argError{arg,"can't work with it"}
+    }
+    return arg + 3,nil
+}
+
+func main() {
+    //遍历slice，对每个值调用f1和f2的方法
+    for _,i := range []int{7,42} {
+        if r,e := f1(i); e != nil {
+            fmt.Println("f1 failed:",e)
+        } else {
+            fmt.Println("f1 worked:",r)
+        }
+    }
+    for _,i := range []int{7,42} {
+        if r,e := f2(i); e!= nil {
+            fmt.Println("f2 failed:",e)
+        } else {
+            fmt.Println("f2 workded:",r)
+        }
+    }
+}
+```
+除了可以自定义error类型，还可以对error接口进行扩充，有关更多的关于error的故事可以参考下面这篇文章:
+
+[Error handling and Go](https://blog.golang.org/error-handling-and-go)
+
+## CSP模型和channel
+golang中的Goroutine是典型的CSP模型，每一个协程就是一个work，各个work之间通过刚channel进行通信，channel就好比是一个通道，类似于
+Unix的Pipe,和Actor模型很相似。golang中的channel默认是没有buffer的，也就是说，一次只能发送一条消息，并且只有等对方接收到了消息后
+才可以再次发送，如果channel中没有消息那么会导致阻塞，知道有消息为止。
+
+```
+done := make(chan bool,1)   //创建了一个bool类型的channel，buffer大小是1
+done <- true                //向channl发送消息
+flag := <-done              //从chanlle中接收消息
+```
+默认情况下channel是全双工的，但是你可以设置channel只能发或者只能接收。
+
+```
+pings <-chan string         //只能发的channel
+pongs chan<- string         //只能收的channel
+```
+
+## select IO多路服用
+写过网络编程的都知道IO多路服用，也就是同一时间内可以监听多个套接字，golang在语言层面提供了select关键字，不过这不是用来监听套接字的，
+而是用来同时监听多个channel。下面是一个select使用的例子:
+
+```
+package main
+
+import "time"
+import "fmt"
+
+func main() {
+    c1 := make(chan string)
+    c2 := make(chan string)
+    fmt.Println(time.Second)
+    //两个协程，通过c1和c2通信
+    go func() {
+        time.Sleep(time.Second * 1)
+        c1 <- "one"
+    }()
+
+    go func() {
+        time.Sleep(time.Second * 2)
+        c2 <- "two"
+    }()
+
+    //select监控多个描述符
+    for i := 0;i < 2;i++ {
+        select {
+        case msg1 := <-c1:
+            fmt.Println("received",msg1)
+        case msg2 := <-c2:
+            fmt.Println("received",msg2)
+        }
+    }
+}
+```
+默认的channel读写是阻塞的，可以通过结合select变成非阻塞,通过在select中加入default，当上面所有的channel都没有消息的时候，会立即
+跳转到default。这样就巧妙的实现了非阻塞。除此之外channel还可以被关闭，当channel被关闭了，说明没有消息要发送过了，此时如果去读channel
+会立即返回非空的error，channel还可以使用for range来进行遍历，前提是需要将channel关闭，否则在遍历的时候会阻塞。
+ 
