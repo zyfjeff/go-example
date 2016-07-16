@@ -397,4 +397,201 @@ func main() {
 默认的channel读写是阻塞的，可以通过结合select变成非阻塞,通过在select中加入default，当上面所有的channel都没有消息的时候，会立即
 跳转到default。这样就巧妙的实现了非阻塞。除此之外channel还可以被关闭，当channel被关闭了，说明没有消息要发送过了，此时如果去读channel
 会立即返回非空的error，channel还可以使用for range来进行遍历，前提是需要将channel关闭，否则在遍历的时候会阻塞。
- 
+
+
+## time和channel
+golang的time package带有定时器的功能，而定时器和channel完美融合，创建一个定时器会返回一个channel，在定时器到期之前读这个channel
+是阻塞的，直到定时时间到达这个channel就会变成可读的。
+
+```
+func main() {
+    //创建了一个定时器，2秒后会发送事件到timer1.C channel
+    timer1 := time.NewTimer(time.Second * 2)
+
+    //等待定时器到期
+    data := <-timer1.C          //接收到的数据 2016-07-16 15:24:19.337701998 +0800 CST
+    fmt.Println("Timer 1 expired")
+    fmt.Println("Timer 1 expired",data)
+    timer2 := time.NewTimer(time.Second)
+    go func() {
+        <- timer2.C
+        fmt.Println("Timer 2 expired")
+    }()
+
+    //关闭定时器
+    stop2 := timer2.Stop()
+    if stop2 {
+        fmt.Println("Timer 2 stopped")
+    }
+}
+``` 
+
+time package除了具有定时器的功能外，还有一个Ticker，Ticker同样也是和channel完美融合的一个功能，创建一个Ticker会返回channel
+通过range这个channel。来表示每次interval的到来。再结合go的协程就很容易实现一个定时任务的功能。
+
+```
+func main() {
+    //创建了定时器,每time.Millisecond * 500就产生事件，发送到chnanel
+    ticker := time.NewTicker(time.Millisecond * 500)
+    go func() {
+        for t := range ticker.C {
+            fmt.Println("Tick at",t)
+        }
+    }()
+    //睡上一段事件，然后关闭
+    time.Sleep(time.Millisecond * 1600)
+    ticker.Stop()
+    fmt.Println("Ticker stopped")
+}
+```
+
+## goroutines和work pool
+goroutines结合channel很容易就可以实现一个work pool，开上N个goroutines，然后这N个goroutines共同去读channel，读到channel
+就去执行相应的工作，然后结果通过另外一个channel传出来即可，模型很简单。用go实现起来还是很容易的。
+
+```
+func worker(id int,jobs <-chan int,result chan<- int) {
+    for j := range jobs {
+        fmt.Println("worker",id,"processing job",j)
+        time.Sleep(time.Second)
+        result <- j * 2
+    }
+}
+
+func main() {
+    jobs := make(chan int,100)
+    results := make(chan int,100)
+    //启动三个worker
+    for w := 1; w <= 3; w++ {
+        go worker(w,jobs,results)
+    }
+    //循环9次，发送任务
+    for j := 1; j <= 9;j++ {
+        jobs <- j
+    }
+    close(jobs)
+    //循环得到结果
+    for a := 1; a <= 9; a++ {
+        <-results
+    }
+}
+```
+
+## rate limiting与channel
+限速这是一个用于控制资源利用率和保证服务质量的一种机制，golang通过goroutines,channel还有tickers优雅的支持了这个机制。
+比如处理web请求的限速，每接收一个请求就先读取一个tick，这个tick每隔固定时间才可读，这样就可以实现限速的功能。
+
+```
+func main() {
+    requests := make(chan int,5)
+    //发送五条消息
+    for i := 1; i <= 5;i++ {
+        requests <- i
+    }
+
+    close(requests)
+    //创建了定时器，然后遍历channel，打印信息
+    limiter := time.Tick(time.Millisecond * 200)
+    for req := range requests {
+        <-limiter   //每隔time.Millisecond * 200，起到了限速的作用
+        fmt.Println("requests",req,time.Now())
+    }
+
+}
+```
+
+但是上面的限速存在一个问题，就是并发数只有1，如果可以在拥有固定的并发数的情况下限速呢?，这就需要借助channel的buffer功能了。
+上面的time.Tick返回的channel是没有buffer的，所以一次只能处理一个请求，如果这个channel是有buffer的，比如这个buffer的大小是N
+那么可以同时并发接收N个请求，想处理第N+1个请求就需要等待固定时间才可以。
+
+```
+func main() {
+    //创建了另外一个time.Time类似的channel
+    burstyLimiter := make(chan time.Time,3)
+    //发送三个
+    for i := 0; i < 3; i++ {
+        burstyLimiter <- time.Now()
+    }
+
+    go func() {
+        for t := range time.Tick(time.Millisecond * 200) {
+            burstyLimiter <- t //每200 * time.Millisecond 就发送一个事件到burstyLimiter
+        }
+    }()
+
+
+    burstyRequests := make(chan int,5)
+    for i := 1; i <= 5; i++ {
+        burstyRequests <- i //发送五个数据
+    }
+    close(burstyRequests)
+    for req := range burstyRequests { //现在开始限速读取
+        <-burstyLimiter//在读前三个的时候是不会阻塞的，直到读取第四个的 时候才开始通过Limiter限速
+        fmt.Println("request",req,time.Now())
+    }
+}
+```
+
+## 自定义sort和Interface
+golang的sort package自带排序的功能，但是如果要对用户自己定义的数据结构进行排序这就不好半了，在C++中要求用户对关系运算符重载即可
+在golang中则需要和interface完美融合，只要用户实现Len,Less,Swap三个接口即可,就是这么简单。
+
+```
+package main
+
+import "fmt"
+import "sort"
+
+//string slice的别名，给这个别名struct 添加方法
+type ByLength []string
+
+func (s ByLength) Len() int {
+    return len(s)
+}
+
+func (s ByLength) Swap(i,j int) {
+    s[i],s[j] = s[j],s[i]
+}
+
+func (s ByLength) Less(i,j int) bool {
+    return len(s[i]) < len(s[j])
+}
+
+//sort接口需要实现 Swap Less和len即可
+func main() {
+    fruits := []string{"peach","banana","kiwi"}
+    sort.Sort(ByLength(fruits))
+    fmt.Println(fruits)
+}
+```
+
+## signal和channel
+golang再一次将unix上的signals和channel结合了起来，unix上通过给信号注册处理函数来完成信号处理，在golang中，通过把信号
+和channel关联起来，当有信号到来channel就可读了。返回的结果就是signal的号码。
+
+```
+import "fmt"
+import "os"
+import "os/signal"
+import "syscall"
+
+func main() {
+    //os.Signal类型的chn
+    sigs := make(chan os.Signal,1)
+    done := make(chan bool,1)
+    //通过Norify来注册信号，
+    signal.Notify(sigs,syscall.SIGINT,syscall.SIGTERM)  //将SIGINT和SIGTERM和sigs channel结合起来
+
+    //协成来收集信号，然后发送done chan来表示完成
+    go func() {
+        sig :=  <-sigs
+        fmt.Println()
+        fmt.Println(sig)
+        done <- true
+    }()
+
+    fmt.Println("awaiting signal")
+    <-done
+    fmt.Println("exiting")
+}
+```
